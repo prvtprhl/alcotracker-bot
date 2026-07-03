@@ -10,8 +10,6 @@ logging.basicConfig(
     format='%(asctime)s %(message)s',
     handlers=[logging.StreamHandler()]
 )
-import sys
-sys.stdout.reconfigure(line_buffering=True)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ["BOT_TOKEN"]
