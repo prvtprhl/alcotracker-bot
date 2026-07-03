@@ -5,7 +5,13 @@ import requests
 import logging
 from datetime import datetime, timezone, timedelta
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(message)s',
+    handlers=[logging.StreamHandler()]
+)
+import sys
+sys.stdout.reconfigure(line_buffering=True)
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ["BOT_TOKEN"]
@@ -54,6 +60,7 @@ def get_records(start, end):
 def tg(method, **kwargs):
     try:
         r = requests.post(f"{API}/{method}", json=kwargs, timeout=10)
+        logger.info(f"tg.{method} -> status {r.status_code}")
         result = r.json()
         if not result.get("ok"):
             logger.error(f"TG {method} error: {result}")
@@ -71,7 +78,10 @@ def get_updates(offset):
             timeout=10
         )
         data = r.json()
-        return data.get("result", [])
+        results = data.get("result", [])
+        if results:
+            logger.info(f"getUpdates: {len(results)} result(s)")
+        return results
     except Exception as e:
         logger.error(f"getUpdates error: {e}")
         return []
