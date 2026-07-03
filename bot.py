@@ -14,7 +14,7 @@ TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
 API = f"https://api.telegram.org/bot{TOKEN}"
 MADRID = ZoneInfo("Europe/Madrid")
-DB_PATH = "/data/alcotracker.db"
+DB_PATH = "/tmp/alcotracker.db"
 
 MONTHS_RU = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля",
@@ -25,7 +25,6 @@ MONTHS_RU = {
 # --- База данных ---
 
 def init_db():
-    os.makedirs("/data", exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS records (
@@ -127,9 +126,9 @@ def main():
     init_db()
     logger.info("Bot started")
 
-    # Расписание
-    schedule.every().day.at("21:00").do(send_question)
-    schedule.every().sunday.at("20:00").do(send_weekly_report)
+    # Расписание (Railway работает в UTC; 21:00 Madrid = 19:00 UTC летом CEST)
+    schedule.every().day.at("19:00").do(send_question)
+    schedule.every().sunday.at("18:00").do(send_weekly_report)
 
     offset = 0
 
