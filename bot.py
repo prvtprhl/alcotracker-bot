@@ -1,18 +1,15 @@
 import os
+import time
 import sqlite3
 import requests
 import logging
-import threading
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import json
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # напр. https://xxx.railway.app
 API = f"https://api.telegram.org/bot{TOKEN}"
 MADRID = timezone(timedelta(hours=2))  # CEST UTC+2
 DB_PATH = "/tmp/alcotracker.db"
@@ -87,7 +84,7 @@ def send_weekly_report():
     for i in range(7):
         day = week_start + timedelta(days=i)
         s = records.get(day.strftime("%Y-%m-%d"))
-        if s == "alco":     emojis.append("🍺"); alco_c += 1
+        if s == "alco":      emojis.append("🍺"); alco_c += 1
         elif s == "no_alco": emojis.append("💧"); noalco_c += 1
         else:                emojis.append("⬜"); empty_c += 1
     period = f"{week_start.day} {MONTHS_RU[week_start.month]} — {today.day} {MONTHS_RU[today.month]}"
@@ -113,76 +110,53 @@ def handle_callback(callback_query):
         tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! Сегодня, {date_ru} — трезвый день. 💧 Записано!")
 
 
-class WebhookHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass  # подавляем дефолтный лог HTTP
+def main():
+    init_db()
 
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"AlcoTracker OK")
+    # Удаляем webhook если вдруг был зарегистрирован
+    tg("deleteWebhook", drop_pending_updates=False)
+    logger.info("Bot started (polling mode)")
 
-    def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(length)
-            update = json.loads(body)
-            logger.info(f"Webhook update received: {list(update.keys())}")
-            if "callback_query" in update:
-                handle_callback(update["callback_query"])
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        except Exception as e:
-            logger.error(f"Webhook handler error: {e}")
-            self.send_response(500)
-            self.end_headers()
-
-
-def schedule_thread():
-    """Фоновый поток для ежедневного расписания."""
-    import time
+    offset = 0
     last_question_date = None
     last_report_date = None
+
     while True:
+        # --- Расписание ---
         now = datetime.now(MADRID)
         today_str = now.strftime("%Y-%m-%d")
         h, m = now.hour, now.minute
         wd = now.weekday()  # 6 = воскресенье
+
         if h == 21 and m < 5 and last_question_date != today_str:
             send_question()
             last_question_date = today_str
+
         if wd == 6 and h == 20 and m < 5 and last_report_date != today_str:
             send_weekly_report()
             last_report_date = today_str
-        time.sleep(30)
 
+        # --- Polling ---
+        try:
+            r = requests.get(
+                f"{API}/getUpdates",
+                params={"offset": offset, "timeout": 30, "allowed_updates": ["callback_query"]},
+                timeout=40
+            )
+            data = r.json()
+            if not data.get("ok"):
+                logger.error(f"getUpdates failed: {data}")
+                time.sleep(5)
+                continue
 
-def register_webhook():
-    if not WEBHOOK_URL:
-        logger.warning("WEBHOOK_URL not set — webhook not registered")
-        return
-    url = f"{WEBHOOK_URL}/webhook"
-    result = tg("setWebhook", url=url, allowed_updates=["callback_query"])
-    logger.info(f"setWebhook: {result}")
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                if "callback_query" in update:
+                    handle_callback(update["callback_query"])
 
-
-def main():
-    init_db()
-    logger.info("Bot starting...")
-
-    register_webhook()
-
-    # Запускаем поток расписания
-    t = threading.Thread(target=schedule_thread, daemon=True)
-    t.start()
-    logger.info("Scheduler thread started")
-
-    # Запускаем HTTP сервер
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), WebhookHandler)
-    logger.info(f"Webhook server listening on port {port}")
-    server.serve_forever()
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
+            time.sleep(5)
 
 
 if __name__ == "__main__":
