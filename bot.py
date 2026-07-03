@@ -60,7 +60,7 @@ def tg(method, **kwargs):
 
 def get_updates(offset):
     try:
-        r = requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 25, "allowed_updates": ["callback_query"]}, timeout=30)
+        r = requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 0, "allowed_updates": ["callback_query"]}, timeout=10)
         return r.json().get("result", [])
     except Exception as e:
         logger.error(f"getUpdates error: {e}")
@@ -131,6 +131,7 @@ def main():
     schedule.every().sunday.at("18:00").do(send_weekly_report)
 
     offset = 0
+    logger.info("Entering main loop...")
 
     while True:
         # Проверяем расписание
@@ -138,14 +139,15 @@ def main():
 
         # Получаем обновления
         updates = get_updates(offset)
+        if updates:
+            logger.info(f"Got {len(updates)} update(s)")
         for update in updates:
             offset = update["update_id"] + 1
             if "callback_query" in update:
                 handle_callback(update["callback_query"])
 
-        # Если не было обновлений — небольшая пауза
-        if not updates:
-            time.sleep(1)
+        # Пауза между запросами
+        time.sleep(2)
 
 if __name__ == "__main__":
     main()
