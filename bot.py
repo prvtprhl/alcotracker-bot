@@ -80,17 +80,21 @@ def send_weekly_report():
     week_start = today - timedelta(days=6)
     records = get_records(week_start.strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
     days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
-    emojis, alco_c, noalco_c, empty_c = [], 0, 0, 0
+    alco_c, noalco_c, empty_c = 0, 0, 0
+    lines = []
     for i in range(7):
         day = week_start + timedelta(days=i)
+        day_name = days_ru[day.weekday()]
+        day_label = f"{day_name} {day.day} {MONTHS_RU[day.month]}"
         s = records.get(day.strftime("%Y-%m-%d"))
-        if s == "alco":      emojis.append("🍺"); alco_c += 1
-        elif s == "no_alco": emojis.append("💧"); noalco_c += 1
-        else:                emojis.append("⬜"); empty_c += 1
+        if s == "alco":      emoji = "🍺"; alco_c += 1
+        elif s == "no_alco": emoji = "💧"; noalco_c += 1
+        else:                emoji = "⬜"; empty_c += 1
+        lines.append(f"{day_label}  {emoji}")
     period = f"{week_start.day} {MONTHS_RU[week_start.month]} — {today.day} {MONTHS_RU[today.month]}"
     text = (f"📊 Отчёт за неделю {period}\n\n"
-            f"{'  '.join(days_ru)}\n{'  '.join(emojis)}\n\n"
-            f"🍺 Алко: {alco_c} дн.\n💧 Безалко: {noalco_c} дн.\n⬜ Без ответа: {empty_c} дн.")
+            + "\n".join(lines)
+            + f"\n\n🍺 Алко: {alco_c} дн.  💧 Безалко: {noalco_c} дн.  ⬜ Без ответа: {empty_c} дн.")
     tg("sendMessage", chat_id=CHAT_ID, text=text)
 
 
