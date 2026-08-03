@@ -96,7 +96,10 @@ def send_question():
 def send_weekly_report():
     logger.info("Sending weekly report...")
     today = datetime.now(MADRID)
-    week_start = today - timedelta(days=6)
+    # Отчёт за прошлую неделю (пн–вс): вызывается в понедельник,
+    # поэтому конец прошлой недели — вчера (воскресенье)
+    week_end = today - timedelta(days=1)
+    week_start = week_end - timedelta(days=6)
     days_ru = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     alco_c, noalco_c, empty_c = 0, 0, 0
     lines = []
@@ -112,7 +115,7 @@ def send_weekly_report():
         else:
             emoji = "—"; empty_c += 1
         lines.append(f"{day_label}  {emoji}")
-    period = f"{week_start.day} {MONTHS_RU[week_start.month]} — {today.day} {MONTHS_RU[today.month]}"
+    period = f"{week_start.day} {MONTHS_RU[week_start.month]} — {week_end.day} {MONTHS_RU[week_end.month]}"
     text = (f"📊 Отчёт за неделю {period}\n\n"
             + "\n".join(lines)
             + f"\n\n🍺 Алко: {alco_c} дн.  💧 Безалко: {noalco_c} дн.  — Без ответа: {empty_c} дн.")
@@ -157,7 +160,7 @@ def main():
             send_question()
             last_question_date = today_str
 
-        if wd == 6 and h == 20 and m < 5 and last_report_date != today_str:
+        if wd == 0 and h == 10 and m < 5 and last_report_date != today_str:
             send_weekly_report()
             last_report_date = today_str
 
