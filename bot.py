@@ -266,8 +266,11 @@ def handle_callback(callback_query):
     send_confirmation(callback_query, confirmation)
 
 
+CONFIRM_SEPARATOR = "\n\n✅ "
+
+
 def send_confirmation(callback_query, text):
-    """Превращаем сообщение с вопросом в подтверждение и убираем кнопки.
+    """Дописываем подтверждение под текст вопроса, сохраняя сам вопрос и кнопки.
 
     Почему редактируем, а не пишем новое сообщение: если одно и то же нажатие
     обработают два экземпляра бота (бывает в момент перезапуска), второй получит
@@ -277,7 +280,17 @@ def send_confirmation(callback_query, text):
     msg_id = msg.get("message_id")
 
     if msg_id:
-        result = tg("editMessageText", chat_id=CHAT_ID, message_id=msg_id, text=text)
+        # Берём исходный вопрос без ранее дописанного подтверждения
+        question = (msg.get("text") or "").split(CONFIRM_SEPARATOR)[0]
+        new_text = question + CONFIRM_SEPARATOR + text if question else text
+        # Кнопки сохраняем — можно поправить ошибочное нажатие
+        markup = msg.get("reply_markup")
+
+        params = {"chat_id": CHAT_ID, "message_id": msg_id, "text": new_text}
+        if markup:
+            params["reply_markup"] = markup
+
+        result = tg("editMessageText", **params)
         if result.get("ok") or "not modified" in str(result.get("description", "")):
             return
         logger.error(f"Confirmation edit failed: {result.get('description')}")
