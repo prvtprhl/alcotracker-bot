@@ -35,6 +35,7 @@ STORAGE_MESSAGE_ID = os.environ.get("STORAGE_MESSAGE_ID", "").strip()
 # В памяти: {date_iso: "alco"/"no_alco"}
 records = {}
 storage_message_id = None  # ID сообщения с данными
+handled_callbacks = set()  # защита от повторной обработки одного нажатия
 
 
 def tg(method, **kwargs):
@@ -230,6 +231,13 @@ def resolve_answer_date(callback_query, raw_data):
 
 def handle_callback(callback_query):
     cq_id = callback_query["id"]
+    if cq_id in handled_callbacks:
+        logger.info(f"Skipping duplicate callback {cq_id}")
+        return
+    handled_callbacks.add(cq_id)
+    if len(handled_callbacks) > 500:
+        handled_callbacks.clear()
+
     raw_data = callback_query["data"]
     action = raw_data.split(":", 1)[0]
 
@@ -246,12 +254,35 @@ def handle_callback(callback_query):
 
     if action == "alco":
         records[date_iso] = "alco"
-        save_data()
-        tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! {prefix}{date_ru} — алко-день. 🍺 Записано!")
+        confirmation = f"Супер! {prefix}{date_ru} — алко-день. 🍺 Записано!"
     elif action == "no_alco":
         records[date_iso] = "no_alco"
-        save_data()
-        tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! {prefix}{date_ru} — трезвый день. 💧 Записано!")
+        confirmation = f"Супер! {prefix}{date_ru} — трезвый день. 💧 Записано!"
+    else:
+        logger.error(f"Unknown callback action: {raw_data}")
+        return
+
+    save_data()
+    send_confirmation(callback_query, confirmation)
+
+
+def send_confirmation(callback_query, text):
+    """Превращаем сообщение с вопросом в подтверждение и убираем кнопки.
+
+    Почему редактируем, а не пишем новое сообщение: если одно и то же нажатие
+    обработают два экземпляра бота (бывает в момент перезапуска), второй получит
+    от Telegram "message is not modified" и дубль не появится.
+    """
+    msg = callback_query.get("message") or {}
+    msg_id = msg.get("message_id")
+
+    if msg_id:
+        result = tg("editMessageText", chat_id=CHAT_ID, message_id=msg_id, text=text)
+        if result.get("ok") or "not modified" in str(result.get("description", "")):
+            return
+        logger.error(f"Confirmation edit failed: {result.get('description')}")
+
+    tg("sendMessage", chat_id=CHAT_ID, text=text)
 
 
 def main():
