@@ -26,9 +26,15 @@ MONTHS_RU = {
     9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
 }
 
+DATA_PREFIX = "ALCOTRACKER_DATA:"
+BACKUP_PATH = "/tmp/alcotracker_backup.json"
+# Если задан — бот жёстко работает с этим сообщением-хранилищем
+# и не зависит от того, что именно закреплено в чате.
+STORAGE_MESSAGE_ID = os.environ.get("STORAGE_MESSAGE_ID", "").strip()
+
 # В памяти: {date_iso: "alco"/"no_alco"}
 records = {}
-storage_message_id = None  # ID закреплённого сообщения с данными
+storage_message_id = None  # ID сообщения с данными
 
 
 def tg(method, **kwargs):
@@ -45,47 +51,116 @@ def tg(method, **kwargs):
         return {}
 
 
+def parse_data_text(text):
+    """Разбираем текст сообщения-хранилища. None — если это не наше сообщение."""
+    if not text or not text.startswith(DATA_PREFIX):
+        return None
+    try:
+        data = json.loads(text[len(DATA_PREFIX):])
+        return data if isinstance(data, dict) else None
+    except Exception as e:
+        logger.error(f"Failed to parse storage data: {e}")
+        return None
+
+
+def read_message_text(message_id):
+    """Читаем текст любого сообщения по ID.
+
+    Bot API не умеет читать историю, но умеет пересылать сообщение самому себе —
+    в ответе приходит его текст. Копию сразу удаляем, чтобы не сорить в чате.
+    """
+    result = tg("forwardMessage",
+                chat_id=CHAT_ID,
+                from_chat_id=CHAT_ID,
+                message_id=int(message_id),
+                disable_notification=True)
+    msg = result.get("result")
+    if not msg:
+        return None
+    tg("deleteMessage", chat_id=CHAT_ID, message_id=msg["message_id"])
+    return msg.get("text", "")
+
+
+def load_backup():
+    try:
+        with open(BACKUP_PATH) as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def load_data():
-    """Загружаем данные из закреплённого сообщения чата."""
+    """Восстанавливаем историю при старте."""
     global records, storage_message_id
 
-    result = tg("getChat", chat_id=CHAT_ID)
-    pinned = result.get("result", {}).get("pinned_message")
+    found = None
 
-    if pinned:
-        text = pinned.get("text", "")
-        if text.startswith("ALCOTRACKER_DATA:"):
-            try:
-                records = json.loads(text[len("ALCOTRACKER_DATA:"):])
-                storage_message_id = pinned["message_id"]
-                logger.info(f"Loaded {len(records)} records from pinned message {storage_message_id}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to parse pinned data: {e}")
+    # 1. Приоритет — явно указанный ID сообщения-хранилища
+    if STORAGE_MESSAGE_ID:
+        data = parse_data_text(read_message_text(STORAGE_MESSAGE_ID))
+        if data is not None:
+            found = data
+            storage_message_id = int(STORAGE_MESSAGE_ID)
+            logger.info(f"Loaded {len(found)} records from STORAGE_MESSAGE_ID={storage_message_id}")
+        else:
+            logger.error(f"STORAGE_MESSAGE_ID={STORAGE_MESSAGE_ID} unreadable or not a storage message")
 
-    # Нет закреплённого сообщения — создаём новое
-    logger.info("No storage message found, creating one...")
+    # 2. Иначе — закреплённое сообщение
+    if found is None:
+        pinned = tg("getChat", chat_id=CHAT_ID).get("result", {}).get("pinned_message") or {}
+        data = parse_data_text(pinned.get("text"))
+        if data is not None:
+            found = data
+            storage_message_id = pinned["message_id"]
+            logger.info(f"Loaded {len(found)} records from pinned message {storage_message_id}")
+
+    records = found if found is not None else {}
+
+    # 3. Локальный бэкап — добираем то, чего нет в хранилище
+    backup = load_backup()
+    restored = {k: v for k, v in backup.items() if k not in records}
+    if restored:
+        records.update(restored)
+        logger.info(f"Restored {len(restored)} records from local backup")
+
+    if storage_message_id is None:
+        logger.info("No storage message found, creating a new one...")
+
     save_data()
+    logger.info(f"Storage ready: message_id={storage_message_id}, records={len(records)}")
 
 
 def save_data():
-    """Сохраняем данные — обновляем или создаём закреплённое сообщение."""
+    """Сохраняем данные в сообщении Telegram + локальный бэкап."""
     global storage_message_id
 
-    text = "ALCOTRACKER_DATA:" + json.dumps(records, ensure_ascii=False)
+    text = DATA_PREFIX + json.dumps(records, ensure_ascii=False, sort_keys=True)
+
+    try:
+        with open(BACKUP_PATH, "w") as f:
+            json.dump(records, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Backup write failed: {e}")
 
     if storage_message_id:
-        tg("editMessageText",
-           chat_id=CHAT_ID,
-           message_id=storage_message_id,
-           text=text)
-    else:
-        result = tg("sendMessage", chat_id=CHAT_ID, text=text)
-        msg_id = result.get("result", {}).get("message_id")
-        if msg_id:
-            storage_message_id = msg_id
-            tg("pinChatMessage", chat_id=CHAT_ID, message_id=msg_id, disable_notification=True)
-            logger.info(f"Created and pinned storage message {msg_id}")
+        result = tg("editMessageText", chat_id=CHAT_ID, message_id=storage_message_id, text=text)
+        if result.get("ok"):
+            return
+        desc = str(result.get("description", ""))
+        # Текст не изменился — это не ошибка
+        if "not modified" in desc:
+            return
+        logger.error(f"Edit failed ({desc}), recreating storage message")
+        storage_message_id = None
+
+    result = tg("sendMessage", chat_id=CHAT_ID, text=text, disable_notification=True)
+    msg_id = result.get("result", {}).get("message_id")
+    if msg_id:
+        storage_message_id = msg_id
+        tg("pinChatMessage", chat_id=CHAT_ID, message_id=msg_id, disable_notification=True)
+        logger.info(f"Created and pinned storage message {msg_id} — "
+                    f"set STORAGE_MESSAGE_ID={msg_id} to make storage permanent")
 
 
 def send_question():
