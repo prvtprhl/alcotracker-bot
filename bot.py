@@ -11,7 +11,14 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ["BOT_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
 API = f"https://api.telegram.org/bot{TOKEN}"
-MADRID = timezone(timedelta(hours=2))  # CEST UTC+2
+
+# Часовой пояс с автоматическим переходом на зимнее/летнее время
+try:
+    from zoneinfo import ZoneInfo
+    MADRID = ZoneInfo("Europe/Madrid")
+except Exception as _tz_err:  # фолбэк, если нет базы tzdata
+    logger.error(f"zoneinfo unavailable ({_tz_err}), falling back to fixed UTC+2")
+    MADRID = timezone(timedelta(hours=2))
 
 MONTHS_RU = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля",
@@ -83,12 +90,15 @@ def save_data():
 
 def send_question():
     logger.info("Sending daily question...")
+    # Дата вопроса зашивается в кнопки, чтобы ответ после полуночи
+    # засчитался за тот день, когда был задан вопрос.
+    date_iso = datetime.now(MADRID).strftime("%Y-%m-%d")
     tg("sendMessage",
        chat_id=CHAT_ID,
        text="🍷 Сегодня день с алкоголем?",
        reply_markup={"inline_keyboard": [[
-           {"text": "🍺 Алко", "callback_data": "alco"},
-           {"text": "💧 Безалко", "callback_data": "no_alco"}
+           {"text": "🍺 Алко", "callback_data": f"alco:{date_iso}"},
+           {"text": "💧 Безалко", "callback_data": f"no_alco:{date_iso}"}
        ]]}
        )
 
@@ -122,22 +132,51 @@ def send_weekly_report():
     tg("sendMessage", chat_id=CHAT_ID, text=text)
 
 
+def resolve_answer_date(callback_query, raw_data):
+    """Дата, за которую засчитывается ответ.
+
+    1) Если дата зашита в callback_data (новые кнопки) — берём её.
+    2) Иначе — дата самого сообщения с вопросом (старые кнопки).
+    3) В крайнем случае — текущая дата.
+    """
+    if ":" in raw_data:
+        candidate = raw_data.split(":", 1)[1]
+        try:
+            return datetime.strptime(candidate, "%Y-%m-%d").date()
+        except ValueError:
+            logger.error(f"Bad date in callback_data: {raw_data}")
+
+    msg_ts = (callback_query.get("message") or {}).get("date")
+    if msg_ts:
+        return datetime.fromtimestamp(msg_ts, tz=MADRID).date()
+
+    return datetime.now(MADRID).date()
+
+
 def handle_callback(callback_query):
     cq_id = callback_query["id"]
-    data = callback_query["data"]
-    today = datetime.now(MADRID)
-    date_iso = today.strftime("%Y-%m-%d")
-    date_ru = f"{today.day} {MONTHS_RU[today.month]}"
-    logger.info(f"Callback: {data} / {date_iso}")
+    raw_data = callback_query["data"]
+    action = raw_data.split(":", 1)[0]
+
+    answer_date = resolve_answer_date(callback_query, raw_data)
+    date_iso = answer_date.strftime("%Y-%m-%d")
+    date_ru = f"{answer_date.day} {MONTHS_RU[answer_date.month]}"
+
+    # Если ответ пришёл позже, чем в день вопроса — говорим "За ...", а не "Сегодня"
+    is_today = answer_date == datetime.now(MADRID).date()
+    prefix = "Сегодня, " if is_today else "За "
+
+    logger.info(f"Callback: {raw_data} -> {date_iso} (today={is_today})")
     tg("answerCallbackQuery", callback_query_id=cq_id)
-    if data == "alco":
+
+    if action == "alco":
         records[date_iso] = "alco"
         save_data()
-        tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! Сегодня, {date_ru} — алко-день. 🍺 Записано!")
-    elif data == "no_alco":
+        tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! {prefix}{date_ru} — алко-день. 🍺 Записано!")
+    elif action == "no_alco":
         records[date_iso] = "no_alco"
         save_data()
-        tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! Сегодня, {date_ru} — трезвый день. 💧 Записано!")
+        tg("sendMessage", chat_id=CHAT_ID, text=f"Супер! {prefix}{date_ru} — трезвый день. 💧 Записано!")
 
 
 def main():
